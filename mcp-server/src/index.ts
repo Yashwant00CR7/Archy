@@ -83,6 +83,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "The raw Mermaid.js code to render.",
             },
+            theme: {
+              type: "string",
+              description: "Theme for the diagram: 'dark', 'original', 'blueprint', 'terminal', 'synthwave', 'forest'. Default: 'dark'.",
+              default: "dark",
+            },
           },
           required: ["code"],
         },
@@ -159,15 +164,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case "render_mermaid": {
-      const { code, theme = "dark" } = request.params.arguments as { code: string; theme?: string };
-      
+      const { code, theme = "dark" } = z
+        .object({
+          code: z.string(),
+          theme: z.string().optional().default("dark"),
+        })
+        .parse(args);
+
       try {
         const cleanedCode = cleanMermaidCode(code);
         const imageResult = await getMermaidImageBase64(cleanedCode, theme as any);
-        
+
         if (!imageResult) {
           return {
-            content: [{ type: "text", text: "Failed to render mermaid diagram to image." }],
+            content: [{ type: "text", text: "Failed to render mermaid diagram to image. Please check the mermaid syntax." }],
             isError: true,
           };
         }
@@ -182,7 +192,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ],
         };
       } catch (error) {
-        throw error;
+        return {
+          content: [{ type: "text", text: `Failed to render mermaid diagram: ${(error as Error).message}` }],
+          isError: true,
+        };
       }
     }
 

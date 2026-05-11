@@ -21,7 +21,7 @@ export const getKrokiImageUrl = (mermaidCode: string, format: 'svg' | 'png' = 'p
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
-    
+
     return `https://kroki.io/mermaid/${format}/${base64url}`;
   } catch (error) {
     console.error('[Archy] Error generating Kroki URL:', error);
@@ -30,42 +30,105 @@ export const getKrokiImageUrl = (mermaidCode: string, format: 'svg' | 'png' = 'p
 };
 
 /**
- * Fetches the rendered image from mermaid.ink and returns it as a base64 string.
- * NODE-ONLY: Uses fs, path, Buffer.
+ * Generates a mermaid.ink image URL for a given mermaid code string.
+ * Browser-safe implementation using btoa for base64 encoding.
  */
-export const getMermaidImageBase64 = async (
-  mermaidCode: string,
-  themeId: keyof typeof THEMES = 'dark'
-): Promise<{ data: string; mimeType: string } | null> => {
-  let url = '';
+export const getMermaidInkUrl = (mermaidCode: string, themeId: keyof typeof THEMES = 'dark'): string => {
   try {
-    // Attempt Kroki first
-    url = getKrokiImageUrl(mermaidCode, 'png');
-    if (!url) return null;
+    const themeConfig = THEMES[themeId] || THEMES.dark;
+    const styledCode = mermaidCode.trim();
 
-    let response = await fetch(url, {
+    // Node-safe base64 encoding
+    const base64 = Buffer.from(styledCode).toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+
+    const bgColor = themeConfig.bg.replace('#', '');
+    return `https://mermaid.ink/img/${base64}?theme=${themeConfig.config.theme}&bgColor=${bgColor}`;
+  } catch (error) {
+    console.error('[Archy] Error generating Mermaid.ink URL:', error);
+    return '';
+  }
+};
+
+/**
+ * Attempts to fetch image from a URL and returns base64 result.
+ */
+async function fetchImageAsBase64(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
       headers: {
         'User-Agent': `ArchMind-MCP/${process.env.npm_package_version || '1.2.3'}`
       }
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      const logMsg = `[${new Date().toISOString()}] URL: ${url}\nStatus: ${response.status}\nBody: ${errorText}\n\n`;
-      try {
-        fs.appendFileSync(LOG_FILE, logMsg);
-      } catch (e) {
-        console.error(`[Archy] Failed to write to log file: ${e}`);
-      }
       return null;
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    const base64Img = Buffer.from(arrayBuffer).toString("base64");
+    return Buffer.from(arrayBuffer).toString('base64');
+  } catch {
+    return null;
+  }
+}
 
-    return { data: base64Img, mimeType: "image/png" };
+/**
+ * Logs error to file for debugging.
+ */
+function logError(url: string, status: number, body: string): void {
+  const logMsg = `[${new Date().toISOString()}] URL: ${url}\nStatus: ${status}\nBody: ${body}\n\n`;
+  try {
+    fs.appendFileSync(LOG_FILE, logMsg);
+  } catch (e) {
+    console.error(`[Archy] Failed to write to log file: ${e}`);
+  }
+}
+
+/**
+ * Fetches the rendered image and returns it as a base64 string.
+ * Tries multiple rendering services in order: kroki.io -> mermaid.ink
+ * NODE-ONLY: Uses fs, path, Buffer, zlib.
+ */
+export const getMermaidImageBase64 = async (
+  mermaidCode: string,
+  themeId: keyof typeof THEMES = 'dark'
+): Promise<{ data: string; mimeType: string; service?: string } | null> => {
+  try {
+    // 1. Try Kroki.io (deflate compression - better for complex diagrams)
+    const krokiUrl = getKrokiImageUrl(mermaidCode, 'png');
+    if (krokiUrl) {
+      const krokiResult = await fetchImageAsBase64(krokiUrl);
+      if (krokiResult) {
+        return { data: krokiResult, mimeType: "image/png", service: 'kroki' };
+      }
+      // Log kroki failure for debugging
+      try {
+        const response = await fetch(krokiUrl);
+        const body = await response.text().catch(() => 'Unable to read body');
+        logError(krokiUrl, response.status, body);
+      } catch { /* ignore */ }
+    }
+
+    // 2. Fallback to mermaid.ink (base64 encoding)
+    const inkUrl = getMermaidInkUrl(mermaidCode, themeId);
+    if (inkUrl) {
+      const inkResult = await fetchImageAsBase64(inkUrl);
+      if (inkResult) {
+        return { data: inkResult, mimeType: "image/png", service: 'mermaid.ink' };
+      }
+      try {
+        const response = await fetch(inkUrl);
+        const body = await response.text().catch(() => 'Unable to read body');
+        logError(inkUrl, response.status, body);
+      } catch { /* ignore */ }
+    }
+
+    console.error('[Archy] All rendering services failed for mermaid code');
+    return null;
   } catch (error: any) {
-    console.error(`[Archy] Fatal error fetching/processing image:`, error);
+    console.error(`[Archy] Fatal error rendering mermaid:`, error.message);
     return null;
   }
 };
